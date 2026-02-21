@@ -1,0 +1,35 @@
+apiVersion: data.mycompany.io/v1alpha1
+kind: SparkSqlPipeline
+metadata:
+  name: demo-pipeline
+  namespace: dev
+spec:
+  image: spark-s3a:4.0.1
+  imagePullPolicy: IfNotPresent
+  sparkVersion: "4.0.1"
+  minio:
+    endpoint: "http://minio.minio.svc.cluster.local:9000"
+    credentialsSecret: "minio-credentials"
+    appConfigMap: "app-config"
+    scriptsBucket: "spark-jars"
+  driver:
+    cores: 1
+    memory: "512m"
+    serviceAccount: spark-operator-spark
+  executor:
+    cores: 1
+    instances: 1
+    memory: "512m"
+  steps:
+    - id: step1
+      script: step1_process.py
+      arguments:
+        - "s3a://job-data/dev/data.csv"
+        - "s3a://job-data/dev-output/processed/"
+    - id: step2
+      script: step2_summary.py
+      dependsOn:
+        - step1
+      arguments:
+        - "s3a://job-data/dev-output/processed/"
+        - "s3a://job-data/dev-output/summary/"
