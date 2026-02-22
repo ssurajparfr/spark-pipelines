@@ -15,21 +15,21 @@ spec:
   driver:
     cores: 1
     memory: "512m"
-    serviceAccount: spark-operator-spark
+    serviceAccount: team-a-spark  # Custom ServiceAccount for isolation
   executor:
     cores: 1
     instances: 1
     memory: "512m"
   steps:
     - id: step1
-      script: step1_process.py
-      arguments:
-        - "s3a://job-data/dev/data.csv"
-        - "s3a://job-data/dev-output/processed/"
+      input: "s3a://job-data/dev/data.csv"
+      output: "s3a://job-data/dev-output/processed/"
+      sql: "s3a://spark-jars/transform.sql"   # ← must be s3a path, not raw SQL
+
     - id: step2
-      script: step2_summary.py
-      dependsOn:
-        - step1
+      script: "step2_process.py"
       arguments:
         - "s3a://job-data/dev-output/processed/"
         - "s3a://job-data/dev-output/summary/"
+      dependsOn:
+        - step1
