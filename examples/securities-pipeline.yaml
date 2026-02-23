@@ -1,0 +1,30 @@
+apiVersion: data.mycompany.io/v1alpha1
+kind: SparkSqlPipeline
+metadata:
+  name: securities-pipeline
+  namespace: dev
+spec:
+  image: spark-s3a:4.0.1
+  imagePullPolicy: IfNotPresent
+  sparkVersion: "4.0.1"
+  minio:
+    endpoint: "http://minio.minio.svc.cluster.local:9000"
+    credentialsSecret: "minio-credentials"
+    appConfigMap: "app-config"
+    scriptsBucket: "team-a/job"
+  driver:
+    cores: 1
+    memory: "512m"
+    serviceAccount: team-a-spark
+  executor:
+    cores: 1
+    instances: 1
+    memory: "512m"
+  steps:
+    - id: team-a
+      input: "s3a://team-a/job-data/raw/securities/"
+      output: "s3a://team-a/job-data/lake/securities/"
+      sql: "s3a://team-a/job/securities_transform.sql"
+      partitionColumn: "date"
+      inputFormat: csv
+      outputFormat: parquet

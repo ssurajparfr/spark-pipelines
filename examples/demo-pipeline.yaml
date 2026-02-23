@@ -15,7 +15,7 @@ spec:
   driver:
     cores: 1
     memory: "512m"
-    serviceAccount: team-a-spark  # Custom ServiceAccount for isolation
+    serviceAccount: team-a-spark
   executor:
     cores: 1
     instances: 1
@@ -24,12 +24,14 @@ spec:
     - id: step1
       input: "s3a://job-data/dev/data.csv"
       output: "s3a://job-data/dev-output/processed/"
-      sql: "s3a://spark-jars/transform.sql"   # ← must be s3a path, not raw SQL
+      partitionColumn: "batch_date"   # optional daily partition
+      sql: "s3a://spark-jars/transform.sql"
 
     - id: step2
       script: "step2_process.py"
       arguments:
-        - "s3a://job-data/dev-output/processed/"
+        - "s3a://job-data/dev-output/processed/"  # input can be automatically adjusted to include partition path
         - "s3a://job-data/dev-output/summary/"
+      partitionColumn: "batch_date"   # optional, for partition-aware reads/writes
       dependsOn:
         - step1
