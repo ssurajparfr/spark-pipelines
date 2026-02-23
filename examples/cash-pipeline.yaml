@@ -1,7 +1,7 @@
 apiVersion: data.mycompany.io/v1alpha1
 kind: SparkSqlPipeline
 metadata:
-  name: securities-pipeline
+  name: cash-pipeline
   namespace: dev
 spec:
   image: spark-s3a:4.0.1
@@ -28,9 +28,9 @@ spec:
 
   steps:
     - id: team-a
-      input: "abfss://raw@sparkpipelinesadls.dfs.core.windows.net/securities/"
-      output: "abfss://lake@sparkpipelinesadls.dfs.core.windows.net/securities/"
-      sql: "abfss://scripts@sparkpipelinesadls.dfs.core.windows.net/securities_transform.sql"
+      input: "abfss://raw@sparkpipelinesadls.dfs.core.windows.net/cash/"
+      output: "abfss://lake@sparkpipelinesadls.dfs.core.windows.net/cash/"
+      sql: "abfss://scripts@sparkpipelinesadls.dfs.core.windows.net/cash_transform.sql"
       inputFormat: csv
       outputFormat: parquet
       partitionColumn: date

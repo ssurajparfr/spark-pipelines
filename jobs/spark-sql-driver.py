@@ -3,32 +3,34 @@ spark-sql-driver.py
 ===================
 Generic SQL executor for SparkSqlPipeline sql-type steps.
 
-Uploaded to: s3a://spark-jars/spark-sql-driver.py
+Upload to: s3a://<scriptsBucket>/spark-sql-driver.py
 
 Called by SparkApplication as:
-  mainApplicationFile: s3a://spark-jars/spark-sql-driver.py
+  mainApplicationFile: s3a://<scriptsBucket>/spark-sql-driver.py
   arguments:
-    - s3a://job-data/dev/data.csv          argv[1] input path
-    - s3a://job-data/dev-output/processed/ argv[2] output path
-    - s3a://spark-jars/transform.sql       argv[3] sql file path in MinIO
-    - csv|parquet|json                     argv[4] optional input format (overrides inferring from path)
+    argv[1]  input path       (e.g. s3a://team-a/job-data/raw/securities/)
+    argv[2]  output path      (e.g. s3a://team-a/job-data/lake/securities/)
+    argv[3]  sql file path    (e.g. s3a://team-a/job/securities_transform.sql)
+    argv[4+] optional flags:
+               --inputFormat=csv|json|parquet   (default: inferred from path, else parquet)
+               --outputFormat=csv|json|parquet  (default: parquet)
+               --partitionColumn=<col>          (partition output by this column)
 
-The SQL file uses 'input' as the table name — it is registered
-as a temp view from the input path before execution:
-
-  SELECT trim(column1), trim(column2) FROM input
-
-Output is written as parquet to the output path.
+SQL file convention:
+  Reference the input dataset as the temp view named 'input':
+    SELECT isin, CAST(amount AS DOUBLE) AS amount, currency, type, date
+    FROM input
 """
+
 import sys
-from pyspark.sql import SparkSession
 from datetime import datetime
-from pyspark.sql.functions import lit, col, to_date
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit
+
 
 def read_sql_from_s3a(spark: SparkSession, sql_path: str) -> str:
-    """Read a SQL file from s3a and return its contents as a string."""
+    """Read a .sql file from s3a using Hadoop FileSystem API."""
     sc = spark.sparkContext
-    # Use Hadoop FileSystem API to read the file as text
     hadoop_conf = sc._jsc.hadoopConfiguration()
     path = sc._jvm.org.apache.hadoop.fs.Path(sql_path)
     fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(
@@ -46,33 +48,32 @@ def read_sql_from_s3a(spark: SparkSession, sql_path: str) -> str:
     reader.close()
     return "\n".join(lines)
 
+
 def main():
     if len(sys.argv) < 4:
-        raise ValueError("Expected at least 3 arguments: input, output, sql_path")
+        raise ValueError(
+            "Expected at least 3 arguments: <input_path> <output_path> <sql_path>"
+        )
 
     input_path  = sys.argv[1]
     output_path = sys.argv[2]
     sql_path    = sys.argv[3]
 
-    # Optional partition column (from extra arg --partitionColumn=xxx)
-    partition_col = None
-    input_format = None
-    output_format = "parquet"  # Default to parquet output
+    # Defaults
+    input_format   = None
+    output_format  = "parquet"
+    partition_col  = None
 
-    # Parse additional arguments
+    # Parse optional flags from argv[4:]
     for arg in sys.argv[4:]:
-        if arg.startswith("--partitionColumn="):
-            partition_col = arg.split("=", 1)[1]
-        elif arg.startswith("--inputFormat="):
+        if arg.startswith("--inputFormat="):
             input_format = arg.split("=", 1)[1].lower()
         elif arg.startswith("--outputFormat="):
             output_format = arg.split("=", 1)[1].lower()
+        elif arg.startswith("--partitionColumn="):
+            partition_col = arg.split("=", 1)[1]
 
-    # Initialize Spark session
-    spark = SparkSession.builder.appName("spark-sql-driver").getOrCreate()
-    spark.sparkContext.setLogLevel("WARN")
-
-    # Validate input format
+    # Infer input format from file extension if not provided
     if input_format is None:
         if input_path.endswith(".csv"):
             input_format = "csv"
@@ -81,62 +82,66 @@ def main():
         else:
             input_format = "parquet"
 
-    print(f"[sql-driver] Using input format: {input_format}")
+    # Initialize Spark
+    spark = SparkSession.builder.appName("spark-sql-driver").getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")
 
-    # Read input data based on the input format
+    print(f"[sql-driver] input:         {input_path}")
+    print(f"[sql-driver] output:        {output_path}")
+    print(f"[sql-driver] sql:           {sql_path}")
+    print(f"[sql-driver] inputFormat:   {input_format}")
+    print(f"[sql-driver] outputFormat:  {output_format}")
+    print(f"[sql-driver] partitionCol:  {partition_col}")
+
+    # Read input
     if input_format == "csv":
         df = spark.read.option("header", "true").option("inferSchema", "true").csv(input_path)
     elif input_format == "json":
         df = spark.read.json(input_path)
-    else:  # Default to parquet
+    else:
         df = spark.read.parquet(input_path)
 
-    # Register the input data as a temp view named 'input' — SQL files reference this name
     df.createOrReplaceTempView("input")
     print(f"[sql-driver] Registered temp view 'input' with {df.count()} rows")
 
-    # Read SQL query from MinIO (S3)
+    # Read and execute SQL
     print(f"[sql-driver] Reading SQL from: {sql_path}")
     sql_text = read_sql_from_s3a(spark, sql_path)
     print(f"[sql-driver] SQL:\n{sql_text}")
 
-    # Execute SQL query on the registered DataFrame
     result = spark.sql(sql_text)
-    print(f"[sql-driver] Result schema:")
     result.printSchema()
     print(f"[sql-driver] Result row count: {result.count()}")
 
-    # Write output with optional partitioning
+    # Write output
     if partition_col:
-        # If the partition column exists in the DataFrame, use it
-        if partition_col in df.columns:
-            # Ensure it's in 'yyyy-MM-dd' format
-            result = result.withColumn(partition_col, to_date(col(partition_col)))
-            print(f"[sql-driver] Using existing column '{partition_col}' for partitioning")
-        else:
-            # Otherwise, use the current date
+        # Add partition column with today's date if not already in result
+        if partition_col not in result.columns:
             partition_value = datetime.now().strftime("%Y-%m-%d")
-            print(f"[sql-driver] Column '{partition_col}' not found, using current date: {partition_value}")
+            print(f"[sql-driver] Adding partition column '{partition_col}' = {partition_value}")
             result = result.withColumn(partition_col, lit(partition_value))
 
+        print(f"[sql-driver] Writing output partitioned by '{partition_col}' to: {output_path}")
+        writer = result.write.mode("overwrite").partitionBy(partition_col)
         if output_format == "csv":
-            result.write.mode("overwrite").partitionBy(partition_col).option("header", "true").csv(output_path)
+            writer.option("header", "true").csv(output_path)
         elif output_format == "json":
-            result.write.mode("overwrite").partitionBy(partition_col).json(output_path)
+            writer.json(output_path)
         else:
-            result.write.mode("overwrite").partitionBy(partition_col).parquet(output_path)
+            writer.parquet(output_path)
     else:
         print(f"[sql-driver] Writing output to: {output_path}")
+        writer = result.write.mode("overwrite")
         if output_format == "csv":
-            result.write.mode("overwrite").option("header", "true").csv(output_path)
+            writer.option("header", "true").csv(output_path)
         elif output_format == "json":
-            result.write.mode("overwrite").json(output_path)
+            writer.json(output_path)
         else:
-            result.write.mode("overwrite").parquet(output_path)
+            writer.parquet(output_path)
 
-    print(f"[sql-driver] Done.")
-    
+    print("[sql-driver] Done.")
     spark.stop()
+
 
 if __name__ == "__main__":
     main()
